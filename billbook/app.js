@@ -105,7 +105,7 @@
   let state = null;
   let isPro = false;
 
-  const blankItem = () => ({ id: uid(), hsn: '', desc: '', unit: '', qty: 1, rate: '', disc: '', tax: state ? defaultTax() : '', custom: {} });
+  const blankItem = () => ({ id: uid(), hsn: '', desc: '', unit: '', qty: 1, rate: '', amount: '', disc: '', tax: state ? defaultTax() : '', custom: {} });
   const defaultTax = () => (state.taxMode === 'gst' ? 18 : state.taxMode === 'single' ? (state.lastTax ?? 0) : 0);
 
   function newInvoice() {
@@ -133,12 +133,22 @@
   /* ---------- calculation ---------- */
   function calc(s) {
     const cols = s.cols || {};
+    const rateHidden = cols.rate === false;
     const items = s.items.map(it => {
-      const qty = cols.qty !== false ? num(it.qty) : 1;
-      const rate = cols.rate !== false ? num(it.rate) : 0;
-      const base = r2(qty * rate);
-      const itemDisc = (cols.disc && num(it.disc)) ? r2(base * clamp(num(it.disc), 0, 100) / 100) : 0;
-      const amount = r2(base - itemDisc);
+      let qty, rate, base, itemDisc, amount;
+      if (rateHidden) {
+        qty = cols.qty !== false ? num(it.qty) : 1;
+        base = num(it.amount);
+        itemDisc = (cols.disc && num(it.disc)) ? r2(base * clamp(num(it.disc), 0, 100) / 100) : 0;
+        amount = r2(base - itemDisc);
+        rate = qty ? r2(amount / qty) : amount;
+      } else {
+        qty = cols.qty !== false ? num(it.qty) : 1;
+        rate = num(it.rate);
+        base = r2(qty * rate);
+        itemDisc = (cols.disc && num(it.disc)) ? r2(base * clamp(num(it.disc), 0, 100) / 100) : 0;
+        amount = r2(base - itemDisc);
+      }
       return { ...it, qty, rate, base, itemDisc, amount };
     });
     const subtotal = r2(items.reduce((a, b) => a + b.amount, 0));
@@ -765,6 +775,7 @@
     const cols = state.cols;
     const customCols = state.customCols || [];
     const taxOn = state.taxMode !== 'none';
+    const rateHidden = cols.rate === false;
 
     $('#items').innerHTML = state.items.map(it => `
       <div class="row" data-id="${it.id}">
@@ -772,13 +783,17 @@
         <div class="c-desc"><label>Description</label><textarea rows="1" data-f="desc" placeholder="e.g. Website design — homepage">${esc(it.desc)}</textarea></div>
         ${cols.unit ? `<div class="c-unit"><label>Unit</label><input type="text" data-f="unit" value="${esc(it.unit || '')}" placeholder="Pcs/Hrs"></div>` : ''}
         ${cols.qty !== false ? `<div class="c-qty"><label>Qty</label><input type="number" inputmode="decimal" min="0" step="any" data-f="qty" value="${esc(it.qty)}"></div>` : ''}
-        ${cols.rate !== false ? `<div class="c-rate"><label>Rate</label><input type="number" inputmode="decimal" min="0" step="any" data-f="rate" value="${esc(it.rate)}" placeholder="0.00"></div>` : ''}
+        ${!rateHidden ? `<div class="c-rate"><label>Rate</label><input type="number" inputmode="decimal" min="0" step="any" data-f="rate" value="${esc(it.rate)}" placeholder="0.00"></div>` : ''}
         ${cols.disc ? `<div class="c-disc"><label>Disc %</label><input type="number" inputmode="decimal" min="0" max="100" step="any" data-f="disc" value="${esc(it.disc || '')}" placeholder="0%"></div>` : ''}
         ${(cols.tax !== false && taxOn) ? `<div class="c-tax"><label>${state.taxMode === 'gst' ? 'GST %' : 'Tax %'}</label><input type="number" inputmode="decimal" min="0" step="any" list="rates" data-f="tax" value="${esc(it.tax)}"></div>` : ''}
         ${customCols.map(cc => `
           <div class="c-custom"><label>${esc(cc.name)}</label><input type="text" data-cf="${cc.id}" value="${esc((it.custom && it.custom[cc.id]) || '')}" placeholder="${esc(cc.name)}"></div>
         `).join('')}
-        ${cols.amount !== false ? `<div class="c-amt"><label>Amount</label><output data-amt>—</output></div>` : ''}
+        ${cols.amount !== false ? (
+          rateHidden
+            ? `<div class="c-amt"><label>Amount</label><input type="number" inputmode="decimal" min="0" step="any" data-f="amount" value="${esc(it.amount ?? '')}" placeholder="0.00"></div>`
+            : `<div class="c-amt"><label>Amount</label><output data-amt>—</output></div>`
+        ) : ''}
         <button type="button" class="icon-btn c-del" data-del title="Remove item" aria-label="Remove item">${ICON.x}</button>
       </div>`).join('');
     $$('#items textarea').forEach(autoGrow);
@@ -806,7 +821,9 @@
     const c = calc(state);
     $('#paper').innerHTML = invoiceHTML(state);
     const rows = $$('#items .row');
-    c.items.forEach((it, i) => { const o = rows[i] && $('[data-amt]', rows[i]); if (o) o.textContent = it.amount ? fmt(it.amount, state.currency) : '—'; });
+    if (!state.cols || state.cols.rate !== false) {
+      c.items.forEach((it, i) => { const o = rows[i] && $('output[data-amt]', rows[i]); if (o) o.textContent = it.amount ? fmt(it.amount, state.currency) : '—'; });
+    }
     $('#sumBox').innerHTML = `<span>Total</span><b>${fmt(c.total, state.currency)}</b>`;
     fitPaper();
   }
@@ -854,6 +871,24 @@
     const colCb = e.target.closest('input[data-col]');
     if (colCb) {
       state.cols[colCb.dataset.col] = colCb.checked;
+      if (colCb.dataset.col === 'rate') {
+        if (!colCb.checked) {
+          state.items.forEach(it => {
+            if (it.amount === '' || it.amount == null) {
+              const q = state.cols.qty !== false ? num(it.qty) : 1;
+              const r = num(it.rate);
+              if (r) it.amount = r2(q * r);
+            }
+          });
+        } else {
+          state.items.forEach(it => {
+            if ((it.rate === '' || it.rate == null) && it.amount) {
+              const q = state.cols.qty !== false ? num(it.qty) : 1;
+              it.rate = q ? r2(num(it.amount) / q) : it.amount;
+            }
+          });
+        }
+      }
       renderColBar();
       renderItems();
       update();
