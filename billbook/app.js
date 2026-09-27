@@ -105,7 +105,7 @@
   let state = null;
   let isPro = false;
 
-  const blankItem = () => ({ id: uid(), desc: '', qty: 1, rate: '', tax: state ? defaultTax() : '' });
+  const blankItem = () => ({ id: uid(), hsn: '', desc: '', unit: '', qty: 1, rate: '', disc: '', tax: state ? defaultTax() : '', custom: {} });
   const defaultTax = () => (state.taxMode === 'gst' ? 18 : state.taxMode === 'single' ? (state.lastTax ?? 0) : 0);
 
   function newInvoice() {
@@ -115,6 +115,8 @@
       number: settings.prefix + String(settings.next).padStart(4, '0'),
       status: 'draft', template: settings.template, accent: settings.accent,
       currency: p.currency || settings.currency, taxMode: p.taxMode || settings.taxMode, taxLabel: p.taxLabel || settings.taxLabel, supply: 'intra',
+      cols: clone(settings.cols || { index: true, hsn: p.taxMode === 'gst', desc: true, unit: false, qty: true, rate: true, disc: false, tax: (p.taxMode || settings.taxMode) !== 'none', amount: true }),
+      customCols: clone(settings.customCols || []),
       from: clone(settings.from), to: { name: '', email: '', phone: '', address: '', taxId: '' },
       date: iso(new Date()), due: iso(addDays(new Date(), 14)),
       items: [], discountType: 'pct', discount: '', shipping: '',
@@ -130,7 +132,15 @@
 
   /* ---------- calculation ---------- */
   function calc(s) {
-    const items = s.items.map(it => ({ ...it, amount: r2(num(it.qty) * num(it.rate)) }));
+    const cols = s.cols || {};
+    const items = s.items.map(it => {
+      const qty = cols.qty !== false ? num(it.qty) : 1;
+      const rate = cols.rate !== false ? num(it.rate) : 0;
+      const base = r2(qty * rate);
+      const itemDisc = (cols.disc && num(it.disc)) ? r2(base * clamp(num(it.disc), 0, 100) / 100) : 0;
+      const amount = r2(base - itemDisc);
+      return { ...it, qty, rate, base, itemDisc, amount };
+    });
     const subtotal = r2(items.reduce((a, b) => a + b.amount, 0));
     const disc = r2(s.discountType === 'pct' ? subtotal * clamp(num(s.discount), 0, 100) / 100 : Math.min(num(s.discount), subtotal));
     const taxable = r2(subtotal - disc);
@@ -138,7 +148,7 @@
     items.forEach(it => {
       const share = subtotal ? it.amount / subtotal : 0;
       it.taxable = it.amount - disc * share;
-      const rate = s.taxMode === 'none' ? 0 : num(it.tax);
+      const rate = (s.taxMode === 'none' || cols.tax === false) ? 0 : num(it.tax);
       it.taxAmt = r2(it.taxable * rate / 100);
       if (rate) byRate[rate] = r2((byRate[rate] || 0) + it.taxAmt);
       tax = r2(tax + it.taxAmt);
@@ -165,6 +175,26 @@
     } catch { return ''; }
   }
 
+  function getActiveCols(s) {
+    const cols = s.cols || { index: true, hsn: s.taxMode === 'gst', desc: true, unit: false, qty: true, rate: true, disc: false, tax: s.taxMode !== 'none', amount: true };
+    const taxOn = s.taxMode !== 'none';
+    const taxName = s.taxMode === 'gst' ? 'GST' : (s.taxLabel || 'Tax');
+    const res = [];
+    if (cols.index !== false) res.push({ id: 'index', name: '#', align: 'n' });
+    if (cols.hsn) res.push({ id: 'hsn', name: 'HSN/SAC', align: 'd' });
+    if (cols.desc !== false) res.push({ id: 'desc', name: 'Description', align: 'd' });
+    if (cols.unit) res.push({ id: 'unit', name: 'Unit', align: 'r' });
+    if (cols.qty !== false) res.push({ id: 'qty', name: 'Qty', align: 'r' });
+    if (cols.rate !== false) res.push({ id: 'rate', name: 'Rate', align: 'r' });
+    if (cols.disc) res.push({ id: 'disc', name: 'Disc %', align: 'r' });
+    if (taxOn && cols.tax !== false) res.push({ id: 'tax', name: taxName, align: 'r' });
+    (s.customCols || []).forEach(cc => {
+      res.push({ id: 'custom_' + cc.id, customId: cc.id, name: cc.name, align: 'd' });
+    });
+    if (cols.amount !== false) res.push({ id: 'amount', name: 'Amount', align: 'r' });
+    return res;
+  }
+
   /* ---------- invoice render ---------- */
   function invoiceHTML(s) {
     const c = calc(s), cur = s.currency, f = n => fmt(n, cur);
@@ -174,14 +204,24 @@
     const st = effectiveStatus(s);
     const taxIdLabel = gst ? 'GSTIN' : (s.taxLabel && s.taxMode === 'single' ? s.taxLabel + ' No.' : 'Tax ID');
 
+    const activeCols = getActiveCols(s);
+    const tableHeaderHtml = `<thead><tr>` + activeCols.map(col => `<th class="${col.align}">${esc(col.name)}</th>`).join('') + `</tr></thead>`;
+
     const rows = c.items.map((it, i) => `
       <tr>
-        <td class="n">${i + 1}</td>
-        <td class="d">${nl2br(it.desc) || '<span class="ph">Item description</span>'}</td>
-        <td class="r">${esc(+num(it.qty).toFixed(3))}</td>
-        <td class="r">${f(num(it.rate))}</td>
-        ${taxOn ? `<td class="r">${num(it.tax) ? esc(num(it.tax)) + '%' : '—'}</td>` : ''}
-        <td class="r b">${f(it.amount)}</td>
+        ${activeCols.map(col => {
+          if (col.id === 'index') return `<td class="n">${i + 1}</td>`;
+          if (col.id === 'hsn') return `<td class="d">${esc(it.hsn || '')}</td>`;
+          if (col.id === 'desc') return `<td class="d">${nl2br(it.desc) || '<span class="ph">Item description</span>'}</td>`;
+          if (col.id === 'unit') return `<td class="r">${esc(it.unit || '')}</td>`;
+          if (col.id === 'qty') return `<td class="r">${esc(+num(it.qty).toFixed(3))}</td>`;
+          if (col.id === 'rate') return `<td class="r">${f(num(it.rate))}</td>`;
+          if (col.id === 'disc') return `<td class="r">${num(it.disc) ? esc(num(it.disc)) + '%' : '—'}</td>`;
+          if (col.id === 'tax') return `<td class="r">${num(it.tax) ? esc(num(it.tax)) + '%' : '—'}</td>`;
+          if (col.id.startsWith('custom_')) return `<td class="d">${esc((it.custom && it.custom[col.customId]) || '')}</td>`;
+          if (col.id === 'amount') return `<td class="r b">${f(it.amount)}</td>`;
+          return '';
+        }).join('')}
       </tr>`).join('');
 
     const rates = Object.keys(c.byRate).map(Number).sort((a, b) => a - b);
@@ -203,7 +243,7 @@
     const title = gst ? 'TAX INVOICE' : 'INVOICE';
     const tpl = (s.template || 'classic').toLowerCase();
 
-    const stampHtml = st === 'paid' ? '<div class="inv-stamp">PAID</div>' : (st === 'overdue' ? '<div class="inv-stamp overdue">OVERDUE</div>' : '');
+    const stampHtml = st === 'overdue' ? '<div class="inv-stamp overdue">OVERDUE</div>' : '';
 
     // 1. EXECUTIVE SIDEBAR LAYOUT
     if (tpl === 'executive') {
@@ -246,7 +286,7 @@
           </header>
 
           <table class="inv-items">
-            <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+            ${tableHeaderHtml}
             <tbody>${rows}</tbody>
           </table>
 
@@ -315,7 +355,7 @@
         </div>
 
         <table class="inv-items">
-          <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+          ${tableHeaderHtml}
           <tbody>${rows}</tbody>
         </table>
 
@@ -377,7 +417,7 @@
         </section>
 
         <table class="inv-items">
-          <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+          ${tableHeaderHtml}
           <tbody>${rows}</tbody>
         </table>
 
@@ -440,7 +480,7 @@
       </section>
 
       <table class="inv-items">
-        <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+        ${tableHeaderHtml}
         <tbody>${rows}</tbody>
       </table>
 
@@ -542,6 +582,7 @@
 
         <section class="card">
           <h3><span class="step">4</span>Items</h3>
+          <div class="col-bar" id="colBar"></div>
           <div id="items"></div>
           <button type="button" class="btn ghost" id="addItem">${ICON.plus} Add item</button>
           <div class="grid2 adj">
@@ -656,6 +697,7 @@
 
   function fillForm() {
     $$('[data-k]').forEach(el => { const v = getPath(state, el.dataset.k); el.value = v ?? ''; });
+    renderColBar();
     renderItems();
     syncUI();
     $('#accCustom').value = /^#[0-9a-f]{6}$/i.test(state.accent) ? state.accent : '#E8430F';
@@ -664,6 +706,7 @@
   }
 
   function syncUI() {
+    renderColBar();
     const gst = state.taxMode === 'gst', single = state.taxMode === 'single';
     $$('[data-show]').forEach(el => {
       const k = el.dataset.show;
@@ -679,14 +722,63 @@
     $('#logoRm').hidden = !has;
   }
 
+  function renderColBar() {
+    const bar = $('#colBar');
+    if (!bar) return;
+    state.cols = state.cols || { index: true, hsn: state.taxMode === 'gst', desc: true, unit: false, qty: true, rate: true, disc: false, tax: state.taxMode !== 'none', amount: true };
+    state.customCols = state.customCols || [];
+    const taxOn = state.taxMode !== 'none';
+    const taxName = state.taxMode === 'gst' ? 'GST %' : 'Tax %';
+
+    const stdCols = [
+      { key: 'index', label: '# (Sl No)' },
+      { key: 'hsn', label: 'HSN/SAC' },
+      { key: 'unit', label: 'Unit' },
+      { key: 'qty', label: 'Qty' },
+      { key: 'rate', label: 'Rate' },
+      { key: 'disc', label: 'Disc %' },
+      ...(taxOn ? [{ key: 'tax', label: taxName }] : [])
+    ];
+
+    bar.innerHTML = `
+      <span class="col-label">Columns:</span>
+      <div class="col-pills">
+        ${stdCols.map(c => `
+          <label class="col-pill ${state.cols[c.key] !== false ? 'is-on' : ''}">
+            <input type="checkbox" data-col="${c.key}" ${state.cols[c.key] !== false ? 'checked' : ''}>
+            <span>${esc(c.label)}</span>
+          </label>
+        `).join('')}
+        ${state.customCols.map(cc => `
+          <span class="col-pill is-on">
+            <span>${esc(cc.name)}</span>
+            <button type="button" class="col-rm" data-rm-custom="${cc.id}" title="Remove column">&times;</button>
+          </span>
+        `).join('')}
+        <button type="button" class="btn ghost sm" id="addCustomColBtn">${ICON.plus} Custom column</button>
+      </div>
+    `;
+  }
+
   function renderItems() {
+    state.cols = state.cols || { index: true, hsn: state.taxMode === 'gst', desc: true, unit: false, qty: true, rate: true, disc: false, tax: state.taxMode !== 'none', amount: true };
+    const cols = state.cols;
+    const customCols = state.customCols || [];
+    const taxOn = state.taxMode !== 'none';
+
     $('#items').innerHTML = state.items.map(it => `
       <div class="row" data-id="${it.id}">
+        ${cols.hsn ? `<div class="c-hsn"><label>HSN/SAC</label><input type="text" data-f="hsn" value="${esc(it.hsn || '')}" placeholder="HSN"></div>` : ''}
         <div class="c-desc"><label>Description</label><textarea rows="1" data-f="desc" placeholder="e.g. Website design — homepage">${esc(it.desc)}</textarea></div>
-        <div class="c-qty"><label>Qty</label><input type="number" inputmode="decimal" min="0" step="any" data-f="qty" value="${esc(it.qty)}"></div>
-        <div class="c-rate"><label>Rate</label><input type="number" inputmode="decimal" min="0" step="any" data-f="rate" value="${esc(it.rate)}" placeholder="0.00"></div>
-        <div class="c-tax" ${state.taxMode === 'none' ? 'hidden' : ''}><label>${state.taxMode === 'gst' ? 'GST %' : 'Tax %'}</label><input type="number" inputmode="decimal" min="0" step="any" list="rates" data-f="tax" value="${esc(it.tax)}"></div>
-        <div class="c-amt"><label>Amount</label><output data-amt>—</output></div>
+        ${cols.unit ? `<div class="c-unit"><label>Unit</label><input type="text" data-f="unit" value="${esc(it.unit || '')}" placeholder="Pcs/Hrs"></div>` : ''}
+        ${cols.qty !== false ? `<div class="c-qty"><label>Qty</label><input type="number" inputmode="decimal" min="0" step="any" data-f="qty" value="${esc(it.qty)}"></div>` : ''}
+        ${cols.rate !== false ? `<div class="c-rate"><label>Rate</label><input type="number" inputmode="decimal" min="0" step="any" data-f="rate" value="${esc(it.rate)}" placeholder="0.00"></div>` : ''}
+        ${cols.disc ? `<div class="c-disc"><label>Disc %</label><input type="number" inputmode="decimal" min="0" max="100" step="any" data-f="disc" value="${esc(it.disc || '')}" placeholder="0%"></div>` : ''}
+        ${(cols.tax !== false && taxOn) ? `<div class="c-tax"><label>${state.taxMode === 'gst' ? 'GST %' : 'Tax %'}</label><input type="number" inputmode="decimal" min="0" step="any" list="rates" data-f="tax" value="${esc(it.tax)}"></div>` : ''}
+        ${customCols.map(cc => `
+          <div class="c-custom"><label>${esc(cc.name)}</label><input type="text" data-cf="${cc.id}" value="${esc((it.custom && it.custom[cc.id]) || '')}" placeholder="${esc(cc.name)}"></div>
+        `).join('')}
+        ${cols.amount !== false ? `<div class="c-amt"><label>Amount</label><output data-amt>—</output></div>` : ''}
         <button type="button" class="icon-btn c-del" data-del title="Remove item" aria-label="Remove item">${ICON.x}</button>
       </div>`).join('');
     $$('#items textarea').forEach(autoGrow);
@@ -704,7 +796,8 @@
     LS.set('draft', state);
     Object.assign(settings, {
       currency: state.currency, taxMode: state.taxMode, taxLabel: state.taxLabel, template: state.template, accent: state.accent,
-      from: clone(state.from), payment: state.payment, upi: state.upi, logo: state.logo, notes: state.notes, terms: state.terms
+      from: clone(state.from), payment: state.payment, upi: state.upi, logo: state.logo, notes: state.notes, terms: state.terms,
+      cols: clone(state.cols || {}), customCols: clone(state.customCols || [])
     });
     LS.set('settings', settings);
   }
@@ -740,10 +833,52 @@
     } else if (el.dataset.f) {
       const id = el.closest('.row').dataset.id;
       const it = state.items.find(i => i.id === id);
-      it[el.dataset.f] = el.value;
-      if (el.dataset.f === 'tax') state.lastTax = el.value;
-      if (el.tagName === 'TEXTAREA') autoGrow(el);
+      if (it) {
+        it[el.dataset.f] = el.value;
+        if (el.dataset.f === 'tax') state.lastTax = el.value;
+        if (el.tagName === 'TEXTAREA') autoGrow(el);
+        update();
+      }
+    } else if (el.dataset.cf) {
+      const id = el.closest('.row').dataset.id;
+      const it = state.items.find(i => i.id === id);
+      if (it) {
+        it.custom = it.custom || {};
+        it.custom[el.dataset.cf] = el.value;
+        update();
+      }
+    }
+  });
+
+  $('#editor').addEventListener('click', e => {
+    const colCb = e.target.closest('input[data-col]');
+    if (colCb) {
+      state.cols[colCb.dataset.col] = colCb.checked;
+      renderColBar();
+      renderItems();
       update();
+      return;
+    }
+    const rmCustom = e.target.closest('[data-rm-custom]');
+    if (rmCustom) {
+      const id = rmCustom.dataset.rmCustom;
+      state.customCols = (state.customCols || []).filter(c => c.id !== id);
+      renderColBar();
+      renderItems();
+      update();
+      return;
+    }
+    const addCol = e.target.closest('#addCustomColBtn');
+    if (addCol) {
+      const name = prompt('Enter name for the new column (e.g. Part No, Serial No, Weight):');
+      if (name && name.trim()) {
+        state.customCols = state.customCols || [];
+        state.customCols.push({ id: uid(), name: name.trim() });
+        renderColBar();
+        renderItems();
+        update();
+      }
+      return;
     }
   });
 
