@@ -201,10 +201,212 @@
     const brand = (!isPro || s.branding) ? `<div class="inv-brand-foot">Made with <b>Billbook</b> · free invoice generator</div>` : '';
     const showWords = c.total > 0;
     const title = gst ? 'TAX INVOICE' : 'INVOICE';
+    const tpl = (s.template || 'classic').toLowerCase();
 
+    const stampHtml = st === 'paid' ? '<div class="inv-stamp">PAID</div>' : (st === 'overdue' ? '<div class="inv-stamp overdue">OVERDUE</div>' : '');
+
+    // 1. EXECUTIVE SIDEBAR LAYOUT
+    if (tpl === 'executive') {
+      return `
+      <div class="inv tpl-executive" style="--acc:${esc(s.accent)}">
+        ${stampHtml}
+        <aside class="inv-sidebar">
+          ${s.logo ? `<img class="inv-logo" src="${esc(s.logo)}" alt="">` : ''}
+          <div class="inv-side-block">
+            <span class="inv-side-label">Issued By</span>
+            <div class="inv-fname">${esc(from.name) || '<span class="ph">Your business name</span>'}</div>
+            <div class="inv-small">${nl2br(from.address)}</div>
+            <div class="inv-small">${[from.email, from.phone].filter(Boolean).map(esc).join('<br>')}</div>
+            ${from.taxId ? `<div class="inv-small"><b>${esc(taxIdLabel)}:</b> ${esc(from.taxId)}</div>` : ''}
+          </div>
+          <div class="inv-side-block">
+            <span class="inv-side-label">Billed To</span>
+            <div class="inv-cname">${esc(to.name) || '<span class="ph">Client name</span>'}</div>
+            <div class="inv-small">${nl2br(to.address)}</div>
+            <div class="inv-small">${[to.email, to.phone].filter(Boolean).map(esc).join('<br>')}</div>
+            ${to.taxId ? `<div class="inv-small"><b>${esc(taxIdLabel)}:</b> ${esc(to.taxId)}</div>` : ''}
+          </div>
+          ${qr ? `<div class="inv-side-block inv-side-qr">${qr}</div>` : ''}
+        </aside>
+
+        <main class="inv-main">
+          <header class="inv-main-head">
+            <div>
+              <span class="inv-type-badge">${title}</span>
+              <h2 class="inv-num">#${esc(s.number)}</h2>
+            </div>
+            <div class="inv-main-dates">
+              <div><span class="lbl">Date:</span> <b>${esc(fmtDate(s.date, cur))}</b></div>
+              ${s.due ? `<div><span class="lbl">Due Date:</span> <b>${esc(fmtDate(s.due, cur))}</b></div>` : ''}
+              <div class="inv-main-due-box">
+                <span class="lbl">${st === 'paid' ? 'Paid' : 'Amount Due'}</span>
+                <div class="amt">${f(c.total)}</div>
+              </div>
+            </div>
+          </header>
+
+          <table class="inv-items">
+            <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+
+          <section class="inv-foot">
+            <div class="inv-left">
+              ${showWords ? `<div class="inv-words"><h4>Amount in words</h4>${esc(amountInWords(c.total, cur))}</div>` : ''}
+              ${s.payment ? `<div class="inv-block"><h4>Payment Details</h4>${nl2br(s.payment)}</div>` : ''}
+              ${s.notes ? `<div class="inv-block"><h4>Notes</h4>${nl2br(s.notes)}</div>` : ''}
+              ${s.terms ? `<div class="inv-block"><h4>Terms</h4>${nl2br(s.terms)}</div>` : ''}
+            </div>
+            <div class="inv-right">
+              <table class="inv-totals">
+                <tr><td>Subtotal</td><td>${f(c.subtotal)}</td></tr>
+                ${c.disc ? `<tr><td>Discount${s.discountType === 'pct' ? ' (' + num(s.discount) + '%)' : ''}</td><td>− ${f(c.disc)}</td></tr>` : ''}
+                ${taxRows}
+                ${c.shipping ? `<tr><td>Shipping / other</td><td>${f(c.shipping)}</td></tr>` : ''}
+                <tr class="grand"><td>Total</td><td>${f(c.total)}</td></tr>
+              </table>
+            </div>
+          </section>
+          ${brand}
+        </main>
+      </div>`;
+    }
+
+    // 2. COMPACT RIBBON LAYOUT
+    if (tpl === 'compact') {
+      return `
+      <div class="inv tpl-compact" style="--acc:${esc(s.accent)}">
+        ${stampHtml}
+        <header class="inv-head-compact">
+          <div class="inv-compact-top">
+            <div class="inv-compact-logo-area">
+              ${s.logo ? `<img class="inv-logo" src="${esc(s.logo)}" alt="">` : ''}
+              <div class="inv-fname">${esc(from.name) || '<span class="ph">Your business name</span>'}</div>
+            </div>
+            <div class="inv-compact-title">
+              <h2>${title}</h2>
+              <span class="inv-compact-num"># ${esc(s.number)}</span>
+            </div>
+          </div>
+          <div class="inv-compact-cards">
+            <div class="inv-compact-card">
+              <span class="tag">From</span>
+              <div class="inv-small">${nl2br(from.address)}</div>
+              <div class="inv-small">${[from.email, from.phone].filter(Boolean).map(esc).join(' · ')}</div>
+              ${from.taxId ? `<div class="inv-small"><b>${esc(taxIdLabel)}:</b> ${esc(from.taxId)}</div>` : ''}
+            </div>
+            <div class="inv-compact-card">
+              <span class="tag">Bill To</span>
+              <div class="inv-cname">${esc(to.name) || '<span class="ph">Client name</span>'}</div>
+              <div class="inv-small">${nl2br(to.address)}</div>
+              <div class="inv-small">${[to.email, to.phone].filter(Boolean).map(esc).join(' · ')}</div>
+              ${to.taxId ? `<div class="inv-small"><b>${esc(taxIdLabel)}:</b> ${esc(to.taxId)}</div>` : ''}
+            </div>
+            <div class="inv-compact-card meta-card">
+              <div><span class="lbl">Date:</span> <b>${esc(fmtDate(s.date, cur))}</b></div>
+              ${s.due ? `<div><span class="lbl">Due:</span> <b>${esc(fmtDate(s.due, cur))}</b></div>` : ''}
+            </div>
+          </div>
+        </header>
+
+        <div class="inv-ribbon">
+          <span>${st === 'paid' ? 'TOTAL PAID' : 'TOTAL AMOUNT DUE'}</span>
+          <b class="ribbon-amt">${f(c.total)}</b>
+        </div>
+
+        <table class="inv-items">
+          <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+
+        <section class="inv-foot">
+          <div class="inv-left">
+            ${showWords ? `<div class="inv-words"><h4>Amount in words</h4>${esc(amountInWords(c.total, cur))}</div>` : ''}
+            ${s.payment ? `<div class="inv-block"><h4>Payment details</h4>${nl2br(s.payment)}</div>` : ''}
+            ${s.notes ? `<div class="inv-block"><h4>Notes</h4>${nl2br(s.notes)}</div>` : ''}
+            ${s.terms ? `<div class="inv-block"><h4>Terms</h4>${nl2br(s.terms)}</div>` : ''}
+          </div>
+          <div class="inv-right">
+            <table class="inv-totals">
+              <tr><td>Subtotal</td><td>${f(c.subtotal)}</td></tr>
+              ${c.disc ? `<tr><td>Discount${s.discountType === 'pct' ? ' (' + num(s.discount) + '%)' : ''}</td><td>− ${f(c.disc)}</td></tr>` : ''}
+              ${taxRows}
+              ${c.shipping ? `<tr><td>Shipping / other</td><td>${f(c.shipping)}</td></tr>` : ''}
+              <tr class="grand"><td>Total</td><td>${f(c.total)}</td></tr>
+            </table>
+            ${qr}
+          </div>
+        </section>
+        ${brand}
+      </div>`;
+    }
+
+    // 3. LUXURY EDITORIAL SERIF LAYOUT
+    if (tpl === 'luxury') {
+      return `
+      <div class="inv tpl-luxury" style="--acc:${esc(s.accent)}">
+        ${stampHtml}
+        <header class="inv-luxury-head">
+          <div class="inv-luxury-brand">
+            ${s.logo ? `<img class="inv-logo" src="${esc(s.logo)}" alt="">` : ''}
+            <h1 class="inv-fname">${esc(from.name) || '<span class="ph">Your Business Name</span>'}</h1>
+            <div class="inv-small">${[from.address, from.email, from.phone].filter(Boolean).map(esc).join(' &nbsp;·&nbsp; ')}</div>
+            ${from.taxId ? `<div class="inv-small"><b>${esc(taxIdLabel)}:</b> ${esc(from.taxId)}</div>` : ''}
+          </div>
+          <div class="inv-luxury-divider"><span>✦</span></div>
+          <div class="inv-luxury-meta-row">
+            <div><span class="lbl">Document</span><h4>${title}</h4></div>
+            <div><span class="lbl">Number</span><h4># ${esc(s.number)}</h4></div>
+            <div><span class="lbl">Date</span><h4>${esc(fmtDate(s.date, cur))}</h4></div>
+            ${s.due ? `<div><span class="lbl">Due</span><h4>${esc(fmtDate(s.due, cur))}</h4></div>` : ''}
+          </div>
+        </header>
+
+        <section class="inv-luxury-client">
+          <div class="inv-luxury-box">
+            <h4>Billed Exclusively To</h4>
+            <div class="inv-cname">${esc(to.name) || '<span class="ph">Client name</span>'}</div>
+            <div class="inv-small">${nl2br(to.address)}</div>
+            <div class="inv-small">${[to.email, to.phone].filter(Boolean).map(esc).join(' · ')}</div>
+            ${to.taxId ? `<div class="inv-small"><b>${esc(taxIdLabel)}:</b> ${esc(to.taxId)}</div>` : ''}
+          </div>
+          <div class="inv-luxury-box inv-luxury-total-box">
+            <h4>Total Outstanding</h4>
+            <div class="inv-due-amt">${f(c.total)}</div>
+          </div>
+        </section>
+
+        <table class="inv-items">
+          <thead><tr><th class="n">#</th><th class="d">Description</th><th class="r">Qty</th><th class="r">Rate</th>${taxOn ? `<th class="r">${esc(taxName)}</th>` : ''}<th class="r">Amount</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+
+        <section class="inv-foot">
+          <div class="inv-left">
+            ${showWords ? `<div class="inv-words"><h4>Amount in words</h4>${esc(amountInWords(c.total, cur))}</div>` : ''}
+            ${s.payment ? `<div class="inv-block"><h4>Payment details</h4>${nl2br(s.payment)}</div>` : ''}
+            ${s.notes ? `<div class="inv-block"><h4>Notes</h4>${nl2br(s.notes)}</div>` : ''}
+            ${s.terms ? `<div class="inv-block"><h4>Terms</h4>${nl2br(s.terms)}</div>` : ''}
+          </div>
+          <div class="inv-right">
+            <table class="inv-totals">
+              <tr><td>Subtotal</td><td>${f(c.subtotal)}</td></tr>
+              ${c.disc ? `<tr><td>Discount${s.discountType === 'pct' ? ' (' + num(s.discount) + '%)' : ''}</td><td>− ${f(c.disc)}</td></tr>` : ''}
+              ${taxRows}
+              ${c.shipping ? `<tr><td>Shipping / other</td><td>${f(c.shipping)}</td></tr>` : ''}
+              <tr class="grand"><td>Total</td><td>${f(c.total)}</td></tr>
+            </table>
+            ${qr}
+          </div>
+        </section>
+        ${brand}
+      </div>`;
+    }
+
+    // 4. STANDARD FORMATS (Classic, Modern, Minimal, Statement)
     return `
-    <div class="inv tpl-${esc(s.template)}" style="--acc:${esc(s.accent)}">
-      ${st === 'paid' ? '<div class="inv-stamp">PAID</div>' : ''}
+    <div class="inv tpl-${esc(tpl)}" style="--acc:${esc(s.accent)}">
+      ${stampHtml}
       <header class="inv-head">
         <div class="inv-from">
           ${s.logo ? `<img class="inv-logo" src="${esc(s.logo)}" alt="">` : ''}
@@ -362,17 +564,19 @@
         </section>
 
         <section class="card">
-          <h3><span class="step">6</span>Invoice format</h3>
-          <p class="hint format-hint">Change the structure of the invoice. Your colour is chosen separately below.</p>
+          <h3><span class="step">6</span>Invoice format &amp; style</h3>
+          <p class="hint format-hint">Select a distinct layout structure for your invoice PDF:</p>
           <div class="tpls" id="tpls">
-            <button type="button" data-tpl="classic"><i class="t-classic"></i><span>Classic</span><small>Balanced</small></button>
-            <button type="button" data-tpl="modern"><i class="t-modern"></i><span>Modern</span><small>Bold header</small></button>
-            <button type="button" data-tpl="minimal"><i class="t-minimal"></i><span>Minimal</span><small>Quiet &amp; clean</small></button>
-            <button type="button" data-tpl="statement"><i class="t-statement"></i><span>Statement</span><small>Editorial split</small></button>
+            <button type="button" data-tpl="classic"><i class="t-classic"></i><span>Classic</span><small>Corporate standard</small></button>
+            <button type="button" data-tpl="executive"><i class="t-executive"></i><span>Executive</span><small>2-Column Sidebar</small></button>
+            <button type="button" data-tpl="minimal"><i class="t-minimal"></i><span>Minimal</span><small>Architectural Grid</small></button>
+            <button type="button" data-tpl="statement"><i class="t-statement"></i><span>Statement</span><small>Hero Banner</small></button>
+            <button type="button" data-tpl="compact"><i class="t-compact"></i><span>Compact</span><small>Total Ribbon</small></button>
+            <button type="button" data-tpl="luxury"><i class="t-luxury"></i><span>Luxury</span><small>Editorial Serif</small></button>
           </div>
-          <p class="format-hint accent-label">Accent colour</p>
+          <p class="format-hint accent-label">Brand accent color</p>
           <div class="swatches" id="swatches">
-            ${['#E8430F', '#1F6B4A', '#1D4ED8', '#B4235A', '#0F172A', '#B8860B'].map(c => `<button type="button" data-acc="${c}" style="--c:${c}" aria-label="Accent ${c}"></button>`).join('')}
+            ${['#E8430F', '#1F6B4A', '#1D4ED8', '#6B21A8', '#0F172A', '#B4235A', '#B8860B'].map(c => `<button type="button" data-acc="${c}" style="--c:${c}" aria-label="Accent ${c}"></button>`).join('')}
             <label class="custom" title="Custom colour"><input type="color" id="accCustom" value="#E8430F"></label>
           </div>
           <label class="check"><input type="checkbox" id="brandOff"> <span>Remove “Made with Billbook” footer <b class="pill">Pro</b></span></label>
